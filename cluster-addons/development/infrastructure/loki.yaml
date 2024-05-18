@@ -1,0 +1,126 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+spec:
+  destination:
+    namespace: infra-tools
+    server: 'https://kubernetes.default.svc'
+  source:
+    path: ''
+    repoURL: 'https://grafana.github.io/helm-charts'
+    targetRevision: 5.36.0
+    chart: loki
+    helm:
+      values: |-
+        loki:
+          auth_enabled: false
+          extraArgs:
+            target: all, table-manager
+          rbac:
+            pspEnabled: false
+          rulerConfig:
+            storage:
+              type: local
+              local:
+                directory: /var/loki/rulestorage
+            ring:
+              kvstore:
+                store: inmemory
+            alertmanager_url: http://prometheus-operator-alertmanager.infra-tools:9093
+          ingester:
+            chunk_idle_period: 3m
+            chunk_block_size: 262144
+            chunk_retain_period: 1m
+            max_transfer_retries: 0
+            lifecycler:
+              ring:
+                kvstore:
+                  store: inmemory
+                replication_factor: 1
+          querier:
+            engine:
+              timeout: 60m
+              max_look_back_period: 3600s
+          server:
+            http_server_read_timeout: 3600s
+            http_server_idle_timeout: 3600s
+            http_server_write_timeout: 3600s
+          limits_config:
+            query_timeout: 3600s
+            enforce_metric_name: false
+            reject_old_samples: false
+            reject_old_samples_max_age: 168h   
+            retention_period: 30d
+          compactor:
+            compaction_interval: 10m
+            retention_enabled: true
+            retention_delete_delay: 24h
+            retention_delete_worker_count: 150
+            working_directory: /data/loki/boltdb-shipper-compactor
+            shared_store: aws            
+          storage_config:
+            boltdb_shipper:
+              active_index_directory: /data/loki/boltdb-shipper-active
+              cache_location: /data/loki/boltdb-shipper-cache
+              cache_ttl: 24h        
+              shared_store: s3
+            aws:
+              s3: s3://eu-west-1
+              bucketnames: "theprojectname-loki-development"
+          schema_config:
+              configs:
+                - from: 2020-07-01
+                  store: boltdb-shipper
+                  object_store: aws
+                  schema: v11
+                  index:
+                    prefix: index_
+                    period: 24h
+        serviceAccount:
+          annotations: 
+            eks.amazonaws.com/role-arn: arn:aws:iam::1111111111111:role/aws-infr-role-loki-development
+        singleBinary:
+          replicas: 1
+          annotations:
+            reloader.stakater.com/auto: "true"
+          extraVolumes:
+          - name: loki-rules
+            configMap:
+              name: loki-rules-alerts 
+          - name: loki-write-folder
+            emptyDir: {}
+          extraVolumeMounts:
+           - name: loki-rules
+             mountPath: "/var/loki/rulestorage/"
+           - name: loki-write-folder
+             mountPath: "/data"
+          resources:
+            limits:
+              cpu: 200m
+              memory: 512Mi
+            requests:
+              cpu: 50m
+              memory: 128Mi
+          tolerations:
+            - key: usage
+              operator: Equal
+              value: infrastructure
+              effect: NoSchedule
+  project: cluster-addons
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - ServerSideApply=true
+    - RespectIgnoreDifferences=true
+  ignoreDifferences:
+  - group: apps
+    kind: StatefulSet
+    jsonPointers:
+      - /spec/persistentVolumeClaimRetentionPolicy
+  - group: monitoring.grafana.com
+    kind: PodLogs
+    jsonPointers:
+      - /spec/relabelings

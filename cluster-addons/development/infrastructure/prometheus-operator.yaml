@@ -1,0 +1,281 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus-operator
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    namespace: infra-tools
+    server: "https://kubernetes.default.svc"
+  source:
+    path: ""
+    repoURL: "https://prometheus-community.github.io/helm-charts"
+    targetRevision: 56.6.2
+    chart: kube-prometheus-stack
+    helm:
+      values: |-
+        nameOverride: "prometheus-operator"
+        defaultRules:
+          create: false
+        prometheus:
+          ingress:
+            enabled: true
+            annotations:
+              kubernetes.io/ingress.class: alb
+              alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30,load_balancing.algorithm.type=least_outstanding_requests
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/scheme: internal
+              alb.ingress.kubernetes.io/load-balancer-name: infrastructure
+              alb.ingress.kubernetes.io/group.name: infrastructure
+              alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-west-1:1111111111111:certificate/bad946e8-b227-4378-92a8-ed3962aaaaaa
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+              alb.ingress.kubernetes.io/ssl-redirect: '443'
+              alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+              alb.ingress.kubernetes.io/healthcheck-port: traffic-port
+              alb.ingress.kubernetes.io/success-codes: 200-299,302
+            hosts:
+              - prometheus.dev.theprojectname.services
+            paths:
+              - /*
+            pathType: ImplementationSpecific
+            tls:
+              - secretName: prometheus.dev.theprojectname.services
+                hosts:
+                  - prometheus.dev.theprojectname.services
+          thanosService:
+            enabled: false
+          thanosIngress:
+            enabled: false
+          prometheusSpec:
+            image:
+              registry: quay.io
+              repository: prometheus/prometheus
+              tag: v2.49.1
+            prometheusConfigReloader:
+              image:
+                registry: quay.io
+                repository: prometheus-operator/prometheus-config-reloader
+                tag: v0.71.2
+            externalLabels:
+              region: eu-west-1
+              monitor: k8s
+              replica: development
+            resources:
+              limits:
+                cpu: 500m
+                memory: "2Gi"
+              requests:
+                cpu: 200m
+                memory: "1Gi"
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: gp2
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 100Gi
+            retention: 2d
+            tolerations:
+            - key: usage
+              operator: Equal
+              value: prometheus
+              effect: NoSchedule
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: dedicated
+                      operator: In
+                      values:
+                      - prometheus-dev
+        alertmanager:
+          enabled: true
+          alertmanagerSpec:
+            forceEnableClusterMode: true
+          ingress:
+            enabled: true
+            annotations:
+              kubernetes.io/ingress.class: alb
+              alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30,load_balancing.algorithm.type=least_outstanding_requests
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/scheme: internal
+              alb.ingress.kubernetes.io/load-balancer-name: infrastructure
+              alb.ingress.kubernetes.io/group.name: infrastructure
+              alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-west-1:1111111111111:certificate/bad946e8-b227-4378-92a8-ed3962aaaaaa
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+              alb.ingress.kubernetes.io/ssl-redirect: '443'
+              alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+              alb.ingress.kubernetes.io/healthcheck-port: traffic-port
+              alb.ingress.kubernetes.io/success-codes: 200-299,302
+            hosts:
+              - alertmanager.dev.theprojectname.services
+            paths:
+              - /*
+            pathType: ImplementationSpecific
+            tls:
+              - secretName: alertmanager.dev.theprojectname.services
+                hosts:
+                  - alertmanager.dev.theprojectname.services
+          alertmanagerSpec:
+            image:
+              registry: quay.io
+              repository: prometheus/alertmanager
+              tag: v0.26.0
+            configSecret: alertmanager-secret
+            tolerations:
+              - key: usage
+                operator: Equal
+                value: prometheus
+                effect: NoSchedule
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: dedicated
+                      operator: In
+                      values:
+                      - prometheus-dev
+        kubelet:
+          enabled: true
+          serviceMonitor:
+            enabled: true
+        grafana:
+          forceDeployDashboards: false
+          defaultDashboardsEnabled: false
+          serviceAccount:
+            annotations:
+              eks.amazonaws.com/role-arn: "arn:aws:iam::1111111111111:role/AWSCloudWatchGrafanaIamRole"
+          ingress:
+            enabled: true
+            annotations:
+              kubernetes.io/ingress.class: alb
+              alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30,load_balancing.algorithm.type=least_outstanding_requests
+              alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/scheme: internal
+              alb.ingress.kubernetes.io/load-balancer-name: infrastructure
+              alb.ingress.kubernetes.io/group.name: infrastructure
+              alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-west-1:1111111111111:certificate/bad946e8-b227-4378-92a8-ed3962aaaaaa
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+              alb.ingress.kubernetes.io/ssl-redirect: '443'
+              alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+              # alb.ingress.kubernetes.io/backend-protocol-version: HTTP2
+              alb.ingress.kubernetes.io/healthcheck-port: traffic-port
+              alb.ingress.kubernetes.io/success-codes: 200-299
+            hosts:
+              - monitoring.dev.theprojectname.services
+            path: /
+            tls:
+              - secretName: monitoring.dev.theprojectname.services
+                hosts:
+                  - monitoring.dev.theprojectname.services
+          additionalDataSources:
+          - name: Loki
+            access: proxy
+            basicAuth: false
+            editable: false
+            jsonData:
+              timeout: 3600
+              tlsSkipVerify: true
+            orgId: 1
+            type: loki
+            url: http://loki-gateway.infra-tools:80
+            version: 1
+          - name: cloudwatch
+            type: cloudwatch
+            editable: true
+            jsonData:
+              authType: default
+              assumeRoleArn: "arn:aws:iam::1111111111111:role/AWSCloudWatchGrafanaIamRole"
+              defaultRegion: eu-west-1
+              customMetricsNamespaces: 'distributed-load-testing'
+          - name: redis
+            type: redis-datasource
+            url: redis-development.feibfw.ng.0001.euw1.cache.amazonaws.com:6379
+
+          grafana.ini:
+            server:
+              domain: monitoring.dev.theprojectname.services
+              root_url: https://monitoring.dev.theprojectname.services/
+            users:
+              viewers_can_edit: false
+              editors_can_admin: true
+              auto_assign_org_role: Editor
+            auth.anonymous:
+              enabled: true
+              org_role: Viewer
+          adminPassword: prom-operator
+          resources:
+            limits:
+              cpu: 0.5
+              memory: 512Mi
+            requests:
+              cpu: 0.1
+              memory: 256Mi
+          tolerations:
+            - key: usage
+              operator: Equal
+              value: prometheus
+              effect: NoSchedule
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: dedicated
+                    operator: In
+                    values:
+                    - prometheus-dev
+        prometheusOperator:
+          image:
+            registry: quay.io
+            repository: prometheus-operator/prometheus-operator
+            tag: v0.71.2
+          tls:
+            enabled: false
+          admissionWebhooks:
+            enabled: false
+            patch:
+              enabled: false
+          tolerations:
+            - key: usage
+              operator: Equal
+              value: infrastructure
+              effect: NoSchedule
+        kubeStateMetrics:
+          serviceMonitor:
+            relabelings:
+              - sourceLabels:
+                  - __meta_kubernetes_endpoint_node_name
+                  - __meta_kubernetes_pod_node_name
+                action: keep
+        kube-state-metrics:
+          prometheus:
+            monitor:
+              enabled: true
+            resources:
+              requests:
+                memory: 64Mi
+                cpu: 0.05
+              limits:
+                memory: 128Mi
+                cpu: 0.2
+        prometheus-node-exporter:
+            resources:
+              requests:
+                memory: 16Mi
+                cpu: "100m"
+              limits:
+                memory: 64Mi
+                cpu: "200m"
+  project: cluster-addons
+  syncPolicy:
+    syncOptions:
+    - Replace=true
+    automated:
+      prune: true
+      selfHeal: true

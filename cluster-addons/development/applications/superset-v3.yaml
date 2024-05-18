@@ -1,0 +1,271 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: superset-v3
+  namespace: infra-tools
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    namespace: development
+    server: https://kubernetes.default.svc
+  source:
+    path: ""
+    repoURL: https://apache.github.io/superset
+    targetRevision: 0.12.3
+    chart: superset
+    helm:
+      values: |
+        envFromSecret: "superset-secret"
+
+        supersetWorker:
+          replicaCount: 2
+          deploymentAnnotations:
+            reloader.stakater.com/auto: "true"
+          autoscaling:
+            enabled: true
+            minReplicas: 2
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: dedicated
+                    operator: In
+                    values:
+                    - superset-dev
+
+        supersetCeleryBeat:
+          enabled: true
+        supersetCeleryFlower:
+          enabled: true
+          command:
+            - "/bin/sh"
+            - "-c"
+            - "pip install authlib; celery --app=superset.tasks.celery_app:app worker"
+          livenessProbe: false
+          readinessProbe: false
+          startupProbe: false
+            
+        supersetNode:
+          replicaCount: 2
+          deploymentAnnotations:
+            reloader.stakater.com/auto: "true"
+          autoscaling:
+            enabled: true
+            minReplicas: 2
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: dedicated
+                    operator: In
+                    values:
+                    - superset-dev
+          livenessProbe: false
+          readinessProbe: false
+          startupProbe: false
+
+        bootstrapScript: |
+          #!/bin/bash
+          apt-get update && apt-get install -y jq &&\
+          pip install mysqlclient Flask-OAuthlib Authlib &&\
+          if [ ! -f ~/bootstrap ]; then echo "Running Superset with uid {{ .Values.runAsUser }}" > ~/bootstrap; fi
+
+        configOverrides:
+          my_override: |
+            from flask_appbuilder.security.manager import AUTH_OAUTH
+            from custom_sso_security_manager import CustomSsoSecurityManager
+            import json
+            CUSTOM_SECURITY_MANAGER = CustomSsoSecurityManager
+            AUTH_TYPE = AUTH_OAUTH
+            LOGOUT_REDIRECT_URL='https://auth.theprojectname.dev/auth/realms/network/protocol/openid-connect/logout'
+            AUTH_USER_REGISTRATION = True
+            AUTH_USER_REGISTRATION_ROLE = 'basic_user_role'
+            AUTH_ROLES_MAPPING = json.loads(os.environ["AUTH_ROLES_MAPPING"])
+            AUTH_ROLES_SYNC_AT_LOGIN = os.environ["AUTH_ROLES_SYNC_AT_LOGIN"].lower() in ["true", "1"]
+            OAUTH_PROVIDERS = [
+                {
+                    'name': 'keycloak',
+                    'icon': 'fa-key',
+                    'token_key': 'access_token',  # Keycloak uses 'access_token' for the access token
+                    'remote_app': {
+                        'client_id': os.environ.get("KEYCLOAK_CLIENT_ID"),
+                        'client_secret': os.environ.get("KEYCLOAK_CLIENT_SECRET"),
+                        'client_kwargs': {
+                            'scope': 'openid email profile',
+                        },
+                        'server_metadata_url': 'https://auth.theprojectname.dev/auth/realms/network/.well-known/openid-configuration',
+                        'api_base_url': 'https://auth.theprojectname.dev/auth/realms/network/protocol/',
+                    },
+                }
+            ]
+            PERMANENT_SESSION_LIFETIME = int(os.getenv('PERMANENT_SESSION_LIFETIME')) 
+            SUPERSET_WEBSERVER_TIMEOUT = 3600
+            FAB_ADD_SECURITY_API = False
+            PUBLIC_ROLE_LIKE = 'Gamma'
+            ENABLE_JAVASCRIPT_CONTROLS = True
+            SQL_ROW_MAX = 10000000
+            SQL_MAX_ROW = 10000000
+            DISPLAY_MAX_ROW = 10000000
+            ROW_LIMIT = 500000
+            SAMPLES_ROW_LIMIT = 500000
+            FILTER_SELECT_ROW_LIMIT = 500000
+            SQLALCHEMY_POOL_SIZE = 45
+            SQLALCHEMY_MAX_OVERFLOW = 30
+            SQLALCHEMY_POOL_TIMEOUT = 180
+            FEATURE_FLAGS = {
+                'DASHBOARD_CROSS_FILTERS': True,
+                'ENABLE_TEMPLATE_PROCESSING': True,
+                'DASHBOARD_RBAC': True,
+                'CUSTOM_TEMPLATE_PROCESSORS': True,
+                'EMBEDDED_SUPERSET': True,
+            }
+        extraSecrets:
+          custom_sso_security_manager.py: |
+            from superset.security import SupersetSecurityManager
+            import logging
+            class CustomSsoSecurityManager(SupersetSecurityManager):
+              def oauth_user_info(self, provider, response=None):  # noqa: ARG002
+                  me = self.appbuilder.sm.oauth_remotes[provider].get("openid-connect/userinfo")
+                  me.raise_for_status()
+                  data = me.json()
+                  logging.debug("User info from Keycloak: %s", data)
+                  return {
+                      "username": data.get("preferred_username", ""),
+                      "first_name": data.get("given_name", ""),
+                      "last_name": data.get("family_name", ""),
+                      "email": data.get("email", ""),
+                      "role_keys": data.get("roles", []),
+              }
+        extraSecretEnv:
+          - name: SUPERSET_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: superset-secret
+                key: SUPERSET_SECRET_KEY
+        extraVolumes:
+          - name: data-connection-secret
+            secret:
+              secretName: superset-data-connection-secret
+              defaultMode: 0600
+        extraVolumeMounts:
+          - name: data-connection-secret
+            mountPath: /app/configs
+        extraEnvRaw:
+          - name: ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: superset-secret
+                key: password
+          - name: ADMIN_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: superset-secret
+                key: username
+          - name: ADMIN_EMAIL
+            valueFrom:
+              secretKeyRef:
+                name: superset-secret
+                key: email
+        extraEnv:
+          GUNICORN_TIMEOUT: 3600
+          TALISMAN_ENABLED: false
+        postgresql:
+          enabled: false
+        redis:
+          enabled: false
+        init:
+          createAdmin: false
+          initscript: |-
+            #!/bin/sh
+            set -eu
+            echo "Upgrading DB schema..."
+            superset db upgrade
+            echo "Initializing roles..."
+            superset init
+            {{ if .Values.init.createAdmin }}
+            echo "Creating admin user..."
+            superset fab create-admin \
+                            --username $ADMIN_USERNAME \
+                            --firstname {{ .Values.init.adminUser.firstname }} \
+                            --lastname {{ .Values.init.adminUser.lastname }} \
+                            --email $ADMIN_EMAIL \
+                            --password $ADMIN_PASSWORD \
+                            || true
+            {{- end }}
+            {{ if .Values.init.loadExamples }}
+            echo "Loading examples..."
+            superset load_examples
+            {{- end }}
+            if [ -f "{{ .Values.extraConfigMountPath }}/import_datasources.yaml" ]; then
+              echo "Importing database connections.... "
+              superset import_datasources -p {{ .Values.extraConfigMountPath }}/import_datasources.yaml
+            fi
+            if [ "$CREATE_INITIAL_ROLE" = true ]; then
+              response=$(curl --request POST \
+                --url http://superset-v3:8088/api/v1/security/roles/ \
+                --header 'Authorization: Bearer token' \
+                --header 'Content-Type: application/json' \
+                --header 'X-CSRFToken: token' \
+                --data '{"name": "basic_user_role"}' | jq -r '.id')
+              
+              curl --request POST \
+                --url http://superset-v3:8088/api/v1/security/roles/$response/permissions \
+                --header 'Authorization: Bearer token' \
+                --header 'Content-Type: application/json' \
+                --header 'X-CSRFToken: token' \
+                --data '{"permission_view_menu_ids": [1,7,15,51,53,70,114,122,124,125,143,150,152,155,167]}'
+            fi
+        ingress:
+          enabled: true
+          ingressClassName: "alb"
+          annotations:
+            external-dns.alpha.kubernetes.io/hostname: superset.theprojectname.dev
+            # external-dns.alpha.kubernetes.io/ttl: "120"
+            alb.ingress.kubernetes.io/load-balancer-name: development-no-proxy-aws-alb
+            alb.ingress.kubernetes.io/group.name: development-no-proxy-aws-alb
+            alb.ingress.kubernetes.io/healthcheck-path: /health
+            alb.ingress.kubernetes.io/scheme: internet-facing
+            alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-west-1:11111111111:certificate/78626b8d-8ad8-49ff-8aaaaaa
+            alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS":443}]'
+            alb.ingress.kubernetes.io/target-type: ip
+            alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+            alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30,load_balancing.algorithm.type=least_outstanding_requests
+            alb.ingress.kubernetes.io/actions.ssl-redirect: '{"Type": "redirect", "RedirectConfig": { "Protocol": "HTTPS", "Port": "443", "StatusCode": "HTTP_301"}}'
+            external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+          path: /*
+          pathType: ImplementationSpecific
+          hosts:
+            - superset.theprojectname.dev
+          tls:
+           - secretName: superset.theprojectname.dev
+             hosts:
+               - superset.theprojectname.dev
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: 700m
+            memory: 3Gi
+        tolerations:
+          - key: usage
+            operator: Equal
+            value: superset
+            effect: NoSchedule
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: dedicated
+                  operator: In
+                  values:
+                  - superset-dev
+  project: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

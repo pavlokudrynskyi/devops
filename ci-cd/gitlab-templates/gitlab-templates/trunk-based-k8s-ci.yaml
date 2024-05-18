@@ -1,0 +1,95 @@
+variables:
+  ENV: ENV
+  DIR: DIR
+  IMAGE_TAG: IMAGE_TAG
+  PREVIOUS_IMAGE_TAG: PREVIOUS_IMAGE_TAG
+  REPOSITORY_URL: REPOSITORY_URL
+  REPOSITORY_URL_PROD: REPOSITORY_URL_PROD
+  SERVICE: nginx
+  AWS_SECRET_ACCESS_KEY: AWS_SECRET_ACCESS_KEY
+  AWS_ACCESS_KEY_ID: AWS_ACCESS_KEY_ID
+  AWS_DEFAULT_REGION: AWS_DEFAULT_REGION
+
+.test-laravel-applications:
+  variables:
+    MYSQL_DATABASE: testing_${SERVICE}_service
+    MYSQL_ALLOW_EMPTY_PASSWORD: "true"
+    DB_CONNECTION: mysql
+    DB_HOST: mysql
+    DB_PORT: 3306
+    DB_DATABASE: "testing_${SERVICE}_service"
+    DB_USERNAME: root
+    PHP_VERSION: "8.1"
+  image: theprojectnamenetwork/laravel-test-runner:${PHP_VERSION}-fpm-alpine
+  cache:
+    key: ${CI_COMMITR_EF_SLUG}-composer
+    paths:
+      - vendor/
+  services:
+    - mysql:8.0
+  script:
+    - composer install --prefer-dist --no-ansi --no-interaction --no-progress
+    - cp .env.example .env
+    - php artisan key:generate
+    - php artisan config:clear
+    - php artisan storage:link
+    - php artisan test --parallel
+
+.build-push-images:
+  before_script:
+    - apk add --no-cache python3 py3-pip
+    - pip install awscli
+    - aws ecr get-login-password | docker login --username AWS --password-stdin $REPOSITORY_URL_PROD
+    - export DOCKER_BUILDKIT=1
+    - IMAGE_TAG="$(echo $CI_COMMIT_SHA | head -c 8)"
+  script:
+    - |
+      export IMAGE_ID=$(docker manifest inspect $REPOSITORY_URL_PROD/$SERVICE-$APP_NAME:$IMAGE_TAG)
+      if [ -n "$IMAGE_ID" ]; then
+        echo "Image already exist in registry. Skip building image"
+      else
+        echo "Image not exist in registry"
+        docker build --target $APP_NAME --cache-from $REPOSITORY_URL_PROD/$SERVICE-$APP_NAME:$PREVIOUS_IMAGE_TAG -t $REPOSITORY_URL_PROD/$SERVICE-$APP_NAME:$IMAGE_TAG --build-arg BUILDKIT_INLINE_CACHE=1 .
+        docker push $REPOSITORY_URL_PROD/$SERVICE-$APP_NAME:$IMAGE_TAG
+      fi
+
+.set-tag:
+  stage: tag
+  script:
+    - |
+      apk add --no-cache bash curl git
+      git config --global user.name "Gitlab Runner"
+      git config --global user.email "gitlab@theprojectname.dev"
+      CI_URL=$(echo $CI_REPOSITORY_URL | awk -F/ '{print $NF}')
+      echo "Result = $CI_URL"
+      git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/theprojectname-network/$CI_URL"
+      TAG_VER=$(echo $CI_COMMIT_BRANCH | sed 's/\.[^.]*$//')
+      echo "TAG_VER = $TAG_VER"
+      echo "starting if"
+      if git tag --list | grep $TAG_VER ; then
+        LAST_TAG=$(git tag --list | grep $TAG_VER | sort -V | tail -n1 )
+        TAG=$(echo $LAST_TAG | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g' )
+      else
+        TAG="$TAG_VER.0"
+      fi
+      echo $TAG
+      git tag $TAG -m "$TAG"
+      git push origin $TAG
+
+.deploy-app:
+  script:
+    - apk add --no-cache bash curl git
+    - git clone https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/theprojectname-network/theprojectname-addons.git
+    - cd cluster-addons/$DIR/applications/
+    - echo $SERVICE-service.yaml
+    - IMAGE_TAG="$(echo $CI_COMMIT_SHA | head -c 8)"
+    - echo $IMAGE_TAG
+    - 'sed -i "s#commit_url:.*#commit_url: $CI_PROJECT_URL/-/commit/$CI_COMMIT_SHA#" $SERVICE-service.yaml || sed -i -E "s/commit_url:.*/commit_url: Unexpected URL format for this notification/" $SERVICE-service.yaml'
+    - CI_COMMIT_BRANCH_ESCAPED=$(echo "$CI_COMMIT_BRANCH" | sed 's/[\/&]/\\&/g')
+    - 'sed -i -E "s/branch_name:.*/branch_name: \"$CI_COMMIT_BRANCH_ESCAPED\"/" $SERVICE-service.yaml || sed -i -E "s/branch_name:.*/branch_name: Unexpected branch name format for this notification/" $SERVICE-service.yaml'
+    - 'sed -i -E "s/commit_author:.*/commit_author: \"$CI_COMMIT_AUTHOR\"/" $SERVICE-service.yaml || sed -i -E "s/commit_author:.*/commit_author: Unexpected author name format for this notification/" $SERVICE-service.yaml'
+    - 'sed -i "s/tag: [\"a-zA-Z0-9]*$/tag: \"$IMAGE_TAG\"/" $SERVICE-service.yaml'
+    - git config --global user.name "Gitlab Runner"
+    - git config --global user.email "gitlab@theprojectname.dev"
+    - git add -A
+    - git commit -m "CI-$CI_PROJECT_NAME:$IMAGE_TAG:$CI_COMMIT_MESSAGE" && git push https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/theprojectname-network/theprojectname-addons.git || echo "No changes to commit"

@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: promtail
+spec:
+  destination:
+    namespace: infra-tools
+    server: 'https://kubernetes.default.svc'
+  source:
+    path: ''
+    repoURL: 'https://grafana.github.io/helm-charts'
+    targetRevision: 6.15.5
+    chart: promtail
+    helm:
+      values: |-
+        tolerations:
+          - effect: NoSchedule
+            operator: Exists
+        resources:
+          limits:
+            cpu: 80m
+            memory: 128Mi
+          requests:
+            cpu: 20m
+            memory: 64Mi
+  project: cluster-addons
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
