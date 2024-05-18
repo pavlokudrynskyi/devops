@@ -1,0 +1,35 @@
+applications:
+  applications:
+    namespace: infra-tools
+    project: default
+    source:
+      repoURL: git@github.com:ArdentLabs/ardent-platform.git
+      targetRevision: HEAD
+      path: eks-services/development
+      directory:
+        recurse: true
+    destination:
+      server: https://kubernetes.default.svc
+      namespace: infra-tools
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true
+ 
+  applications-prod:
+    namespace: infra-tools
+    project: default
+    source:
+      repoURL: git@github.com:ArdentLabs/ardent-platform.git
+      targetRevision: HEAD
+      path: eks-services/production
+      directory:
+        recurse: true
+    destination:
+      server: https://kubernetes.default.svc
+      namespace: infra-tools
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true
+ 

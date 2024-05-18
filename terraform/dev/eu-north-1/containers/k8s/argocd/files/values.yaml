@@ -1,0 +1,43 @@
+global:
+  image:
+    repository: quay.io/argoproj/argocd
+    tag: v2.10.5
+controller:
+  name: application-controller
+  resources:
+    limits:
+      cpu: 800m
+      memory: 2048Mi
+    requests:
+      cpu: 500m
+      memory: 1024Mi
+
+dex:
+  enabled: false
+redis:
+  enabled: true
+
+server:
+  replicas: 1
+
+  ingress:
+    enabled: false
+  extraArgs:
+    - --insecure
+
+configs:
+  cm:
+    admin.enabled: "true"
+  repositories:
+    private-repo:
+      url: git@github.com:theprojectname/theprojectrepo.git
+  
+repoServer:
+  replicas: 2
+  resources:
+    limits:
+      cpu: 300m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
