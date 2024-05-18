@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "general-app.fullname" . }}
+  labels:
+    {{- include "general-app.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "general-app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "general-app.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "general-app.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.pvc }}
+      volumes:
+        {{- range .Values.pvc }}
+        - name: {{ .name }}
+          persistentVolumeClaim:
+            claimName: {{ .name }}-pvc
+        {{- end }}
+      {{- end }}
+{{- if .Values.initContainers }}
+      initContainers:
+        - name: volume-permissions
+          image: alpine:latest
+          {{- if .Values.initContainers.command }}
+          command:
+          {{  range .Values.initContainers.command }}
+          - {{ . }}{{ end }}
+          {{- end }}
+          {{- if .Values.pvc }}
+          volumeMounts:
+          {{- range .Values.pvc }}
+            - mountPath: {{ .mountPath }}
+              name: {{ .name }}
+          {{- end }}
+          {{- end }}
+{{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.pvc }}
+          volumeMounts:
+          {{- range .Values.pvc }}
+            - mountPath: {{ .mountPath }}
+              name: {{ .name }}
+          {{- end }}
+          {{- end }}
+          {{- if .Values.envFrom }}
+          envFrom:
+          {{- if .Values.envFrom.configMaps }}
+          {{- range .Values.envFrom.configMaps }}
+          - configMapRef:
+              name: {{ . | quote }}
+          {{- end }}
+          {{- end }}
+          {{- if .Values.envFrom.secretNames }}
+          {{- range .Values.envFrom.secretNames }}
+          - secretRef:
+              name: {{ . | quote }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.deployment.containerPort }}
+              protocol: TCP
+          {{- if .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
